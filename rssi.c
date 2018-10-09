@@ -81,11 +81,11 @@ main(int argc, const char **argv)
 	/* Step 2 */
 	i = read(fd, syn, sizeof(syn));
 	printf("Got back %d bytes\n", i);
+	for (i = 0; i < 12; i++)
+		syn[i] = ntohs(syn[i]);
 
 	/* Step 3 */
 	/* Accept remote sequence number */
-	for (i = 0; i < 12; i++)
-		syn[i] = ntohs(syn[i]);
 	syn[1] = (syn[1] >> 8) | (seq++ << 8);
 	syn[11] = compsum(syn, 12);
 	for (i = 0; i < 12; i++)
