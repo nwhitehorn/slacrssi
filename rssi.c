@@ -46,7 +46,7 @@ main(int argc, const char **argv)
 	bzero(&addr, sizeof(addr));
 	addr.sin_family = AF_INET;
 	addr.sin_addr.s_addr = inet_addr(argv[1]);
-	addr.sin_port = htons(atoi(argv[2]));
+	addr.sin_port = htons(8198);
 
 	err = connect(fd, (struct sockaddr *)&addr, sizeof(addr));
 
