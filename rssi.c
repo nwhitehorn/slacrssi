@@ -76,13 +76,37 @@ void header_to_bytes(struct header *hdr, uint16_t *bytes){
 	}
 }
 
+void print_byte(uint8_t byte){
+	for (int i = 0; i < 8; i++){
+		printf("%d", (byte>>7-i)&1);
+	}
+}
+
+void print_buf(uint16_t *buf, uint8_t size){
+	for (int i = 0; i < size; i++){
+		printf("%d: ", i);
+		print_byte(buf[i] >> 8);
+		printf(" | ");
+		print_byte(buf[i] & 0xFF);
+		printf("\n");
+	}
+}
+
 int bytes_to_header(uint16_t *bytes, struct header *hdr){
-	if (bytes[11] != compsum(bytes, (bytes[0] % (1<<8)) / 2)){
-		printf("Checksum is not valid!");
+	hdr->synf = (bytes[0] >> 15) % 2;
+
+	uint8_t checksum;
+	if (hdr->synf){
+		checksum = (compsum(bytes, 12) == bytes[11]);
+	} else{
+		checksum = (compsum(bytes, 4) == bytes[3]);
+	}
+	if (!checksum){
+		printf("Checksum is not valid!\n");
+		print_buf(bytes, 4);
+		printf("%d, %d", compsum(bytes, 4), bytes[3]);
 		return 0;
 	}
-
-	hdr->synf = (bytes[0] >> 15) % 2;
 	hdr->ackf = (bytes[0] >> 14) % 2;
 	hdr->rstf = (bytes[0] >> 12) % 2;
 	hdr->nulf = (bytes[0] >> 11) % 2;
@@ -144,11 +168,14 @@ void write_header(int fd, struct header *hdr, uint16_t *byte_array){
 	write(fd, byte_array, size);
 }
 
-void read_header(int fd, struct header *hdr, uint16_t *buffer){
+int read_header(int fd, struct header *hdr, uint16_t *buffer){
 	int bytes_transferred = read(fd, buffer, BUFFER_SIZE);
 	for (int i = 0; i < bytes_transferred/2;  i++)
 		buffer[i] = ntohs(buffer[i]);
-	bytes_to_header(buffer, hdr);
+	if (!bytes_to_header(buffer, hdr))
+		return -1;
+	else
+		return bytes_transferred;
 }
 
 int
@@ -176,14 +203,14 @@ main(int argc, const char **argv)
 	//  * 1. Send SYN to remote end
 	//  * 2. Receive SYN segment back with a valid ACK number
 	//  * 3. Reply to server with valid ACK segment.
-	uint8_t seq = 19;
+	uint8_t seq = 0;
 	uint8_t ack = 0;
 	uint16_t buffer[BUFFER_SIZE];
 
 	struct header hdr;
 	hdr.synf = 1;
 	hdr.ackf = 0;
-	hdr.seq = seq;
+	hdr.seq = seq++;
 	hdr.ack = 0;
 	hdr.vsn = 1;
 	hdr.chk = 1;
@@ -193,7 +220,7 @@ main(int argc, const char **argv)
 	hdr.cum_ack_timeout = 100;
 	hdr.null_timeout = 100;
 	hdr.max_num_retrans = 16;
-	hdr.max_cum_ack = 16;
+	hdr.max_cum_ack = 1;
 	hdr.timeout_unit = 3;
 	hdr.conn_id = 0;
 
@@ -205,55 +232,54 @@ main(int argc, const char **argv)
 
 	printf("HEADER RECEIVED:\n");
 	print_header(&hdr);
-	// print_syn(&syn);
+
+	// Accepts header. Stores sync options in syn header.
+	struct header syn = hdr;
+
+	/* Creates an acknowledgment header used for adata transfer */
+	struct header ackhdr, resp;
+	bzero(&ackhdr, sizeof(ackhdr));
+	ackhdr.ackf = 1;
+	ackhdr.nulf = 1;
+	ackhdr.seq = seq++;
+	ackhdr.ack = hdr.seq;
+
+
+
+	write_header(fd, &ackhdr, buffer);
+	print_header(&ackhdr);
+
+	ack = hdr.seq; // Last number acknowledged
+	uint8_t next_ack = ack + 1;
+
+	uint8_t seg_packet_received;
+	uint16_t size;
+
+	while (1){
+		seg_packet_received = 1;
+
+		for (int i = 0; i < syn.max_outstanding_segs; i++){
+			size = read_header(fd, &resp, buffer);
+			if (resp.seq != ((ack + 1 + i) & 0xFF)){
+				seg_packet_received = 0;
+				break;
+			}
+		}
+		
+		if (seg_packet_received){
+			printf("Received packets %d - %d\n", ack + 1, ack + 8);
+
+			ack = resp.seq;
+			ackhdr.ack = ack;
+			ackhdr.seq = seq++;
+
+			printf("Sending: ");
+			print_header(&ackhdr);
+			write_header(fd, &ackhdr, buffer);
+		}
+	}
+
+
 	return 0;
 
-	// uint16_t hdr[12];
-	// hdr[0] = RSSI_SYN | (24);
-	// hdr[1] = (seq++) << 8;
-	// hdr[2] = (1 << 12) | (8) | (1 << 11) | (1 << 10); 
-	// hdr[3] = 1024; /* Max packet size in bytes */
-
-	// hdr[4] = 10; /* retransmission timeout (ms) */
-	// hdr[5] = 100; /* cumulative ack timeout (ms) */
-	// hdr[6] = 100; /* dead connection timeout (ms) */
-	// hdr[7] = (16 << 8) | (16 << 0); /* Number of retransmissions before giving up */
-
-	// hdr[8] = 3;  previous numbers in ms (10^-3) 
-	// hdr[9] = 0;
-	// hdr[10] = 0;
-	// hdr[11] = compsum(hdr, 12) ;
-
-	// send_header(fd, hdr, 1);
-
-	// /* Step 2 */
-	// uint16_t resp[12];
-	// read_header(fd, resp, 1);
-
-
-	// /* Creates ACK packet */
-	// hdr[0] = RSSI_NUL |  RSSI_ACK | (8);
-	// hdr[1] = ((seq++) << 8) | (resp[1] >> 8);
-	// hdr[2] = 0;
-	// hdr[3] = compsum(hdr, 4);
-	// send_header(fd ,hdr, 1);
-
-	// /* Data Transfer Phase */
-	// int counter = 0;
-	// while (1){
-	// 	if (counter % 5 == 0){
-	// 		hdr[0] = RSSI_NUL |  RSSI_ACK | (8);
-	// 		hdr[1] = ((seq++) << 8) | (resp[1] >> 8);
-	// 		hdr[2] = 0;
-	// 		hdr[3] = compsum(hdr, 4);
-	// 		send_header(fd ,hdr, 1);
-	// 		send_header(fd ,hdr, 1);
-	// 		send_header(fd ,hdr, 1);
-
-	// 	}
-	// 	read_header(fd, resp, 1);
-	// 	counter++;
-	// }
-
-	return (0);
 }
