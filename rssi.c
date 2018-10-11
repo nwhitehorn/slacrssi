@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <strings.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -253,32 +254,39 @@ main(int argc, const char **argv)
 	uint8_t next_ack = ack + 1;
 
 	uint8_t seg_packet_received;
-	uint16_t size;
+	uint32_t packet_size, total_size;
+	total_size = 0;
 
+	struct timeval stop, start;
+	gettimeofday(&start, NULL);
+	//do stuff
+		
 	while (1){
 		seg_packet_received = 1;
-
+		packet_size = 0;	
 		for (int i = 0; i < syn.max_outstanding_segs; i++){
-			size = read_header(fd, &resp, buffer);
+			packet_size += read_header(fd, &resp, buffer);
 			if (resp.seq != ((ack + 1 + i) & 0xFF)){
 				seg_packet_received = 0;
 				break;
 			}
 		}
-		
-		if (seg_packet_received){
-			printf("Received packets %d - %d\n", ack + 1, ack + 8);
 
+		if (seg_packet_received){
+			total_size += packet_size;
 			ack = resp.seq;
 			ackhdr.ack = ack;
 			ackhdr.seq = seq++;
 
-			printf("Sending: ");
-			print_header(&ackhdr);
 			write_header(fd, &ackhdr, buffer);
 		}
-	}
 
+		if (total_size > 10000000)
+			break;
+	}
+	
+	gettimeofday(&stop, NULL);
+	printf("Sent %d bytes in %.4f seconds\n", total_size, stop.tv_sec - start.tv_sec + (double)(stop.tv_usec - start.tv_usec) / 1000000);
 
 	return 0;
 
