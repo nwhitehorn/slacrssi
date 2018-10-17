@@ -7,6 +7,10 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <math.h>
+#include <string.h>
+
+#define min(a, b) ((a < b) ? (a) : (b))
 
 
 #define RSSI_SYN (1 << 15)
@@ -15,7 +19,7 @@
 #define RSSI_NUL (1 << 11)
 #define RSSI_BUSY (1 << 8)
 
-#define BUFFER_SIZE 4000
+#define BUFFER_SIZE 9000
 
 uint16_t
 compsum(uint16_t *data, uint8_t size)
@@ -183,8 +187,7 @@ int
 main(int argc, const char **argv)
 {
 	struct sockaddr_in addr;
-	int fd, err, i;
-	uint16_t buf[9000];
+	int fd, err;
 
 	fd = socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if (fd < 0) {
@@ -216,12 +219,12 @@ main(int argc, const char **argv)
 	hdr.vsn = 1;
 	hdr.chk = 1;
 	hdr.max_outstanding_segs = 8;
-	hdr.max_seg_size = 1024;
-	hdr.retrans_timeout = 10;
-	hdr.cum_ack_timeout = 100;
-	hdr.null_timeout = 100;
-	hdr.max_num_retrans = 16;
-	hdr.max_cum_ack = 1;
+	hdr.max_seg_size = BUFFER_SIZE;
+	hdr.retrans_timeout = 20;
+	hdr.cum_ack_timeout = 5;
+	hdr.null_timeout = 1000;
+	hdr.max_num_retrans = 15;
+	hdr.max_cum_ack = 5;
 	hdr.timeout_unit = 3;
 	hdr.conn_id = 0;
 
@@ -239,54 +242,61 @@ main(int argc, const char **argv)
 
 	/* Creates an acknowledgment header used for adata transfer */
 	struct header ackhdr, resp;
-	bzero(&ackhdr, sizeof(ackhdr));
-	ackhdr.ackf = 1;
-	ackhdr.nulf = 1;
+	struct header tx[256];
+	memcpy(&ackhdr, &hdr, sizeof(ackhdr));
 	ackhdr.seq = seq++;
 	ackhdr.ack = hdr.seq;
 
-
-
 	write_header(fd, &ackhdr, buffer);
+
 	print_header(&ackhdr);
+	bzero(&ackhdr, sizeof(ackhdr));
+	ackhdr.nulf = 1;
+	ackhdr.ackf = 1;
 
 	ack = hdr.seq; // Last number acknowledged
-	uint8_t next_ack = ack + 1;
 
-	uint8_t seg_packet_received;
-	uint32_t packet_size, total_size;
-	total_size = 0;
-
-	struct timeval stop, start;
+	struct timeval stop, start, timeout;
+	fd_set set;
 	gettimeofday(&start, NULL);
 	//do stuff
-		
-	while (1){
-		seg_packet_received = 1;
-		packet_size = 0;	
-		for (int i = 0; i < syn.max_outstanding_segs; i++){
-			packet_size += read_header(fd, &resp, buffer);
-			if (resp.seq != ((ack + 1 + i) & 0xFF)){
-				seg_packet_received = 0;
-				break;
+
+	timeout.tv_sec = 0;
+	timeout.tv_usec = min(min(syn.retrans_timeout, syn.cum_ack_timeout), syn.null_timeout)*pow(10, -syn.timeout_unit + 6);
+	
+	while (1) {
+		// XXX: should use recvmmsg() here
+		FD_ZERO(&set);
+		FD_SET(fd, &set);
+		int rv = select(fd + 1, &set, NULL, NULL, &timeout);
+		if (rv > 0) {
+			read_header(fd, &resp, buffer);
+			if (resp.synf) {
+				print_header(&resp);
+				printf("Seq number: %d\n", seq);
 			}
 		}
 
-		if (seg_packet_received){
-			total_size += packet_size;
+		if ((uint8_t)(seq - resp.ack) % 256 > syn.max_cum_ack) {
+			for (uint8_t i = resp.ack; i < seq; i++) {
+				printf("Retrans %d (%d %d)\n", i, resp.ack, seq);
+				write_header(fd, &tx[i], buffer);
+			}
+		}
+				
+
+		if ((uint8_t)(resp.seq - ack) % 256 >= syn.max_outstanding_segs/2) {
 			ack = resp.seq;
 			ackhdr.ack = ack;
 			ackhdr.seq = seq++;
 
+			tx[ackhdr.seq] = ackhdr;
 			write_header(fd, &ackhdr, buffer);
 		}
-
-		if (total_size > 10000000)
-			break;
 	}
 	
 	gettimeofday(&stop, NULL);
-	printf("Sent %d bytes in %.4f seconds\n", total_size, stop.tv_sec - start.tv_sec + (double)(stop.tv_usec - start.tv_usec) / 1000000);
+	//printf("Sent %d bytes in %.4f seconds\n", total_size, stop.tv_sec - start.tv_sec + (double)(stop.tv_usec - start.tv_usec) / 1000000);
 
 	return 0;
 
