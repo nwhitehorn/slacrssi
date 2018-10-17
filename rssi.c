@@ -208,6 +208,7 @@ main(int argc, const char **argv)
 	//  * 2. Receive SYN segment back with a valid ACK number
 	//  * 3. Reply to server with valid ACK segment.
 	uint8_t seq = 0;
+	uint8_t last_seq = 0;
 	uint8_t ack = 0;
 	uint16_t buffer[BUFFER_SIZE];
 
@@ -265,6 +266,8 @@ main(int argc, const char **argv)
 	timeout.tv_sec = 0;
 	timeout.tv_usec = min(min(syn.retrans_timeout, syn.cum_ack_timeout), syn.null_timeout)*pow(10, -syn.timeout_unit + 6);
 	
+	resp.ack = seq;
+	last_seq = syn.seq;
 	while (1) {
 		// XXX: should use recvmmsg() here
 		FD_ZERO(&set);
@@ -272,10 +275,11 @@ main(int argc, const char **argv)
 		int rv = select(fd + 1, &set, NULL, NULL, &timeout);
 		if (rv > 0) {
 			read_header(fd, &resp, buffer);
-			if (resp.synf) {
+			if (resp.synf)
 				print_header(&resp);
-				printf("Seq number: %d\n", seq);
-			}
+			if ((uint8_t)(resp.seq - last_seq) > 1)
+				printf("Lost packets %d-%d\n", last_seq+1, resp.seq);
+			last_seq = resp.seq;
 		}
 
 		if (((uint8_t)(seq - resp.ack) % 256) > syn.max_outstanding_segs) {
@@ -285,7 +289,7 @@ main(int argc, const char **argv)
 			}
 		}
 
-		if (((uint8_t)(resp.seq - ack) % 256) >= syn.max_outstanding_segs/2) {
+		if ((rv == 0) || (((uint8_t)(resp.seq - ack) % 256) >= syn.max_outstanding_segs/2)) {
 			ack = resp.seq;
 			ackhdr.ack = ack;
 			ackhdr.seq = seq++;
