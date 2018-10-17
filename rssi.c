@@ -212,13 +212,14 @@ main(int argc, const char **argv)
 	uint16_t buffer[BUFFER_SIZE];
 
 	struct header hdr;
+	bzero(&hdr, sizeof(hdr));
 	hdr.synf = 1;
 	hdr.ackf = 0;
 	hdr.seq = seq++;
 	hdr.ack = 0;
 	hdr.vsn = 1;
 	hdr.chk = 1;
-	hdr.max_outstanding_segs = 8;
+	hdr.max_outstanding_segs = 32;
 	hdr.max_seg_size = BUFFER_SIZE;
 	hdr.retrans_timeout = 20;
 	hdr.cum_ack_timeout = 5;
@@ -277,15 +278,14 @@ main(int argc, const char **argv)
 			}
 		}
 
-		if ((uint8_t)(seq - resp.ack) % 256 > syn.max_cum_ack) {
+		if (((uint8_t)(seq - resp.ack) % 256) > syn.max_cum_ack) {
 			for (uint8_t i = resp.ack; i < seq; i++) {
 				printf("Retrans %d (%d %d)\n", i, resp.ack, seq);
 				write_header(fd, &tx[i], buffer);
 			}
 		}
-				
 
-		if ((uint8_t)(resp.seq - ack) % 256 >= syn.max_outstanding_segs/2) {
+		if (((uint8_t)(resp.seq - ack) % 256) >= syn.max_outstanding_segs/2) {
 			ack = resp.seq;
 			ackhdr.ack = ack;
 			ackhdr.seq = seq++;
